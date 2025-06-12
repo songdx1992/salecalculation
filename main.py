@@ -44,7 +44,6 @@ def get_current_user(authorization: str = Header(...)):
 
 
 secure_router = APIRouter(
-    prefix="/",
     dependencies=[Depends(get_current_user)]
 )
 app.include_router(secure_router)

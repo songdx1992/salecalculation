@@ -1,3 +1,4 @@
+# config.py
 # 数据库配置
 db_config = {
     'host': '125.91.113.114',

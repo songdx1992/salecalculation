@@ -17,19 +17,18 @@ def get_all_fixed_costs() -> List[FixedCost]:
 
             fixed_costs = []
             for row in results:
-                fixed_cost = {
-                    "month": row[0],
-                    "dept": row[1],
-                    "rent": float(row[2]),
-                    "salary": float(row[3]),
-                    "travel": float(row[4]),
-                    "other": float(row[5]),
-                    "marketing_share": float(row[6]),
-                    "customer_service_share": float(row[7])
-                }
-                fixed_costs.append(fixed_cost)
+                fixed_costs.append({
+                    "month": row["month"],
+                    "dept": row["dept"],
+                    "rent": float(row["rent"]),
+                    "salary": float(row["salary"]),
+                    "travel": float(row["travel"]),
+                    "other": float(row["other"]),
+                    "marketing_share": float(row["marketing_share"]),
+                    "customer_service_share": float(row["customer_service_share"])
+                })
             print(">>> 正在调用 /fixed_costs 接口 <<<")
-            # print(fixed_costs)
+            print(fixed_costs)
             return fixed_costs
 
     finally:
@@ -54,3 +53,7 @@ def save_fixed_cost_data(data: List[FixedCost]) -> dict:
     finally:
         cursor.close()
         conn.close()
+
+
+if __name__ == '__main__':
+    get_all_fixed_costs()

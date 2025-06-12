@@ -48,4 +48,3 @@ def fetch_fixed_costs() -> Dict[str, Dict[str, Dict[str, float]]]:
 
 # 程序启动时加载一次（如需实时刷新建议放入 FastAPI 的依赖中）
 fixed_costs_by_dept_and_month = fetch_fixed_costs()
-

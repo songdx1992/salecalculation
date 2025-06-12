@@ -11,6 +11,12 @@ class Product(BaseModel):
     id: int
     name: str
 
+class ProductList(Product):
+    cost_unit_price: float
+    shipping_fee: float
+    cost_tax_rate: float
+
+
 
 # 固定费用数据结构
 class FixedCost(BaseModel):

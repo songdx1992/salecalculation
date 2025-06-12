@@ -3,13 +3,17 @@ from typing import List, Dict
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
-from crud.products import products_data,add_product_to_db
-from costs import fixed_costs_by_dept_and_month
-from accounts import accounts
+from backend.crud.products import products_data,add_product_to_db
+from backend.crud.get_user import get_user
+from backend.costs import fixed_costs_by_dept_and_month
 from collections import defaultdict     # 导入 defaultdict，用于汇总累加
-from fastapi import FastAPI, HTTPException
-from  models import LoginRequest,Product,FixedCost,ProductAdd,CalculationInput
-from crud.fixed_costs import get_all_fixed_costs, save_fixed_cost_data
+from backend.models import LoginRequest,Product,FixedCost,ProductAdd,CalculationInput,ProductList
+from backend.crud.fixed_costs import get_all_fixed_costs, save_fixed_cost_data
+from typing import  Optional
+from fastapi import FastAPI, Query, HTTPException,Header, Depends, APIRouter
+from passlib.hash import bcrypt
+from backend.utils.jwt import verify_token,create_access_token
+
 app = FastAPI()
 
 # 添加 CORS 中间件，允许任意来源
@@ -21,51 +25,87 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # 静态文件挂载
+# 获取项目根目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
+print("路径",current_dir)
 frontend_dir = os.path.join(current_dir, "../frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
 
+
+def get_current_user(authorization: str = Header(...)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="认证失败")
+    token = authorization.split(" ")[1]
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token 无效或已过期")
+    return payload["sub"]
+
+
+secure_router = APIRouter(
+    prefix="/",
+    dependencies=[Depends(get_current_user)]
+)
+app.include_router(secure_router)
 # —— 登录接口 —— #
 @app.post("/login")
 def login(req: LoginRequest):
-    user = accounts.get(req.username)
-    if user and user["password"] == req.password:
-        return {"status": "success", "username": req.username, "role": user["role"]}
+    print(req)
+    result=get_user(req.username)
+    if result:
+        hashed_password = result["hashed_password"]
+        role = result["role"]
+        # 验证密码是否匹配
+        if bcrypt.verify(req.password, hashed_password):
+            # 👇 成功后生成 JWT token
+            access_token = create_access_token(data={"sub": req.username, "role": role})
+            return {"status": "success", "username": req.username, "role": role,"token": access_token}
     raise HTTPException(status_code=401, detail="用户名或密码错误")
+    # user = accounts.get(req.username)
+    # if user and user["password"] == req.password:
+    #     return {"status": "success", "username": req.username, "role": user["role"]}
+    # raise HTTPException(status_code=401, detail="用户名或密码错误")
 
 
 # —— 前端入口 —— #
-@app.get("/")
-async def read_index():
-    return FileResponse(os.path.join(frontend_dir, "index.html"))
+# @app.get("/")
+# async def read_index():
+#     return FileResponse(os.path.join(frontend_dir, "index.html"))
+
 
 
 # —— 产品列表 —— #
-@app.get("/products", response_model=List[Product])
+@secure_router.get("/products", response_model=List[Product])
 def get_products():
     products = products_data()
     return [Product(id=p["id"], name=p["name"]) for p in products]
 
+@secure_router.get("/all_products", response_model=List[ProductList])
+def all_products(name: Optional[str] = Query(None, description="按名称模糊搜索")):
+    products = products_data(name)
+    print("all_products:",products)
+    return  products
 
-@app.get("/fixed_costs", response_model=List[FixedCost])
+
+@secure_router.get("/fixed_costs", response_model=List[FixedCost])
 def get_fixed_costs():
     return get_all_fixed_costs()
 
 
-@app.post("/save_fixed_costs")
+@secure_router.post("/save_fixed_costs")
 def save_fixed_costs(data: List[FixedCost]):
     return save_fixed_cost_data(data)
 
-@app.post("/add_product")
+@secure_router.post("/add_product")
 def add_product(product: ProductAdd):
-    print(product)
+    print("add_product:",product)
     return add_product_to_db(product)
 
 
 # —— 核心计算 —— #
 
-@app.post("/calculate")
+@secure_router.post("/calculate")
 def calculate(data: CalculationInput) -> Dict:
 
     print(">>> 收到请求")
@@ -85,9 +125,12 @@ def calculate(data: CalculationInput) -> Dict:
         summary_fin: Dict[str, float] = defaultdict(float)
 
         products_list = products_data()
+        # print("products_list",products_list)
         for it in data.products:
+            print("it单价",it.unit_price)
             # 查找产品配置
             prod = next((p for p in products_list if p["id"] == it.id), None)
+            print("prod",prod)
             if not prod:
                 raise HTTPException(status_code=404, detail=f"产品 ID {it.id} 未找到")
 
@@ -128,10 +171,13 @@ def calculate(data: CalculationInput) -> Dict:
 
             # —— 二、财务端计算 —— #
             cost_tax_rate      = prod.get("cost_tax_rate", 0.0)  # 成本单价税率
-            fin_unit_price     = it.unit_price / (1 + cost_tax_rate)  # 财务不含税单价 = 含税单价 / (1 + 税率)
+            print("成本单价",prod["cost_unit_price"])
+            fin_cost_unit_price = prod["cost_unit_price"] / (1 + cost_tax_rate)  # 财务不含税成本单价 = 含税单价 / (1 + 成本单价税率)
+            print("财务成本单价", fin_cost_unit_price)
+            fin_unit_price     = it.unit_price/ (1 + cost_tax_rate)
             fin_gmv            = fin_unit_price * it.quantity  # 财务GMV
             fin_revenue        = fin_gmv * (1 - it.refund_rate)  # 财务收入总额
-            fin_cost           = prod["cost_unit_price"] * it.quantity  # 财务成本总额
+            fin_cost           = fin_cost_unit_price * it.quantity  # 财务成本总额
             fin_gross          = fin_revenue - fin_cost  # 财务毛利额
 
             # 财务变动费用
@@ -139,10 +185,10 @@ def calculate(data: CalculationInput) -> Dict:
             sample_fee_fin     = fin_revenue * it.sample_fee_rate  # 财务寄样费用
             platform_fee_fin   = platform_fee_bus / 1.06   # 财务平台扣点
             other_pf_fin       = other_pf_bus  / 1.06   # 财务平台其他费用
-            influencer_fee_fin = fin_revenue * it.influencer_rate * (1 - it.influencer_tax_rate)  # 财务达人佣金
+            influencer_fee_fin = influencer_fee/ (1 + it.influencer_tax_rate)  # 财务达人佣金
             ad_spend_fin       = it.ad_spend_amount / 1.06   # 财务投流费用
             kol_fee_fin        = kol_fee/ 1.06   # 财务KOL费用
-            slot_fee_var_fin   = fin_revenue * it.slot_fee_rate / (1 +it.slot_fee_tax_rate)  # 财务坑位费(保GMV)
+            slot_fee_var_fin   = slot_fee_var / (1 +it.slot_fee_tax_rate)  # 财务坑位费(保GMV)
             slot_fee_fix_fin   = it.slot_fee_amount /(1 + it.slot_fee_tax_rate)  # 财务坑位费(不保GMV)
 
             # 财务利润
@@ -151,11 +197,16 @@ def calculate(data: CalculationInput) -> Dict:
                 shipping_fee_fin + sample_fee_fin + platform_fee_fin + other_pf_fin +
                 influencer_fee_fin + ad_spend_fin + kol_fee_fin + slot_fee_var_fin + slot_fee_fix_fin
             )  # 财务营销利润
+
             sales_profit_fin     = marketing_profit_fin - total_fixed  # 财务销售利润
             marketing_margin_fin = (marketing_profit_fin / fin_revenue) if fin_revenue else 0  # 财务营销利润率
 
+            marketing_profit_slot_fee_fix = marketing_profit_fin + slot_fee_fix_fin  # 营销利润+财务坑位费(不保GMV)
+            marketing_margin_slot_fee_fix_fin= (marketing_profit_slot_fee_fix/fin_revenue) if marketing_profit_slot_fee_fix else 0
+
+            total_fixed_slot_fee_fix = total_fixed + slot_fee_fix_fin   #  固定费用+财务坑位费(不保GMV)
             # 保本分析
-            breakeven_revenue_fin = (total_fixed / marketing_margin_fin) if marketing_margin_fin else 0  # 财务端保本销售额
+            breakeven_revenue_fin = (total_fixed_slot_fee_fix / marketing_margin_slot_fee_fix_fin) if marketing_margin_slot_fee_fix_fin else 0  # 财务端保本销售额
             breakeven_revenue_bus = breakeven_revenue_fin * (1 + cost_tax_rate)  # 业务端保本销售额
             breakeven_qty_bus     = (breakeven_revenue_bus / it.unit_price) if it.unit_price else 0  # 业务端保本销售数量
 
@@ -180,7 +231,7 @@ def calculate(data: CalculationInput) -> Dict:
                 "rent": alloc_rent,
                 "customer_service": cs_alloc,
                 "marketing": mkt_alloc,
-                "roi":business_revenue/sum([influencer_fee,ad_spend,kol_fee]),
+                "roi":business_revenue/sum([influencer_fee,ad_spend,kol_fee,slot_fee_var,slot_fee_fix]),
                 "marketing_profit": marketing_profit_bus,
                 "sales_profit": sales_profit_bus,
                 "marketing_margin": marketing_margin_bus,
@@ -190,7 +241,7 @@ def calculate(data: CalculationInput) -> Dict:
 
             fin = {
                 "gmv": fin_gmv,
-                "unit_cost": fin_unit_price,
+                "unit_cost": fin_cost_unit_price,
                 "refund_rate": it.refund_rate,
                 "revenue": fin_revenue,
                 "cost": fin_cost,
@@ -208,7 +259,7 @@ def calculate(data: CalculationInput) -> Dict:
                 "rent": alloc_rent,
                 "customer_service": cs_alloc,
                 "marketing": mkt_alloc,
-                "roi": fin_revenue / sum([influencer_fee_fin, ad_spend_fin, kol_fee_fin]),
+                "roi": fin_revenue / sum([influencer_fee_fin, ad_spend_fin, kol_fee_fin,slot_fee_var_fin + slot_fee_fix_fin]),
                 "marketing_profit": marketing_profit_fin,
                 "sales_profit": sales_profit_fin,
                 "marketing_margin": marketing_margin_fin,
@@ -231,3 +282,8 @@ def calculate(data: CalculationInput) -> Dict:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"计算出错: {str(e)}")
 
+# 对于所有未知路径返回 index.html（支持前端路由）
+@app.get("/{full_path:path}")
+def spa_handler(full_path: str):
+    index_path = os.path.join("frontend", "index.html")
+    return FileResponse(index_path)

@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sale_backend
+    ports:
+      - "8009:8009"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: sale_frontend
+    ports:
+      - "8088:80"
+    restart: unless-stopped
+    depends_on:
+     - backend
